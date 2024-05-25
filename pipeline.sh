@@ -16,6 +16,7 @@ function echo_and_run { echo -e "\$ $@" ; read input; "$@" ; read input; }
 # cd "$parent_path"
 
 log "Generate ground truth from .pyfg file"
+echo_and_run python3 pyfg_to_tum.py $1 temp_gt.tum
 
 log "Compare TUM files"
-echo_and_run evo_ape TUM_FILE_CORA TUM_FILE_DCORA -va --plot --plot_mode xz --save_results pipeline.zip
+echo_and_run evo_traj tum $2 --ref=temp_gt.tum -p --plot_mode.xz

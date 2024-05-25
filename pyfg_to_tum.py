@@ -40,10 +40,12 @@ def save_pyfg_to_tum(pyfg_filepath: str, tum_filepath: str) -> None:
     dim = _get_dim_from_first_line(f_temp.readline())
     pose_state_dim = 3 if dim == 2 else 7
     f_temp.close()
+
+    num_poses = 0
     
     def _get_pose_from_line(line: str) -> str:
         line_parts = line.split(" ")
-        pose_var_timestamp = float(line_parts[1])
+        pose_var_timestamp = num_poses
         if (dim == 2):
             assert line_parts[0] == POSE_TYPE_2D
             assert len(line_parts) == 6
@@ -82,6 +84,7 @@ def save_pyfg_to_tum(pyfg_filepath: str, tum_filepath: str) -> None:
             if (tokens[0] == POSE_TYPE_2D or tokens[0] == POSE_TYPE_3D):
                 pose_var = _get_pose_from_line(line)
                 tum_file.write(f"{pose_var}\n")
+                num_poses = num_poses + 1
             #elif (tokens[0] == LANDMARK_TYPE_2D or tokens[0] == LANDMARK_TYPE_3D):
             #    _get_landmark_from_line(line)
             else:
