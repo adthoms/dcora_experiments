@@ -2,6 +2,7 @@ import sys
 import argparse
 import os
 import logging
+import subprocess
 from py_factor_graph.io.pyfg_file import read_from_pyfg_file
 from py_factor_graph.io.tum_file import save_robot_trajectories_to_tum_file
 from py_factor_graph.utils.logging_utils import logger
@@ -48,11 +49,24 @@ class EvaluationPipeline:
             # process data file with CORA
             # TODO(AT): create custom CORA executable that will operate on data_file and save its output to a CORA directory in data_file_out_dir
 
+            # Placeholder for CORA TUM output
+            cora_tum_output = os.path.join(self.data_dir, "cora_se2.tum")
+
             # process data file with DCORA
             # TODO(AT): create custom DCORA executable that will operate on data_file and save its output to a DCORA directory in data_file_out_dir
 
+            # Placeholder for DCORA TUM output; will adjust to have one TUM output per agent
+            dcora_tum_output = ""
+
             # compare CORA and DCORA against ground truth
             # TODO(JV): Use EVO for comparison. Consider using subprocess to call EVO from the command line.
+
+            ground_truth_tum = os.path.join(ground_truth_subdir, "odom_gt_robot_A.txt")
+            
+            evo_traj_command = f"evo_traj tum {cora_tum_output} {dcora_tum_output} --ref={ground_truth_tum} -p --plot_mode=xz --save_plot {data_file_out_dir}/traj.png"
+            subprocess.run(evo_traj_command, shell=True, capture_output=True)
+            
+
 
 
 def main(args):
