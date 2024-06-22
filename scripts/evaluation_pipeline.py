@@ -1,6 +1,7 @@
 import sys
 import argparse
 import os
+import shutil
 import logging
 import subprocess
 from py_factor_graph.io.pyfg_file import read_from_pyfg_file
@@ -16,6 +17,20 @@ def create_subdir(dir: str, subdir_name: str) -> str:
         os.makedirs(subdir_path)
     return subdir_path
 
+# As adapted from: https://www.tutorialspoint.com/How-to-delete-all-files-in-a-directory-with-Python
+def delete_subdir_contents(subdir_path: str) -> None:
+    try:
+        with os.scandir(subdir_path) as it:
+            for entry in it:
+                if entry.is_file():
+                    os.remove(entry)
+                else:
+                    shutil.rmtree(entry)
+    except FileNotFoundError:
+        logger.warning(f"Directory {subdir_path} not found.")
+    except OSError:
+        logger.error(f"Error deleting contents of {subdir_path}.")
+
 
 class EvaluationPipeline:
     def __init__(self, args):
@@ -26,6 +41,24 @@ class EvaluationPipeline:
         logger.info(f"Evaluation Pipeline starting...")
         self.process_data_files()
         logger.info(f"Evaluation Pipeline finished.")
+
+    def check_evo_tools(self) -> None:
+        """
+        Checks for evo, evo_traj, evo_ape, evo_rpe, and evo_res in PATH.
+
+        Raises:
+            FileNotFoundError: If any of the evo tools are not found in PATH.
+
+        Returns:
+            None
+        """
+        # *nix OS family: use which command
+
+        evo_commands = ['evo', 'evo_traj', 'evo_ape', 'evo_rpe', 'evo_res']
+
+        for evo_command in evo_commands:
+            if (subprocess.call(['which', evo_command], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT) != 0):
+                raise FileNotFoundError(f"{evo_command} not found in PATH")
 
     def compare_cora_gt(self, cora_subdir: str, gt_subdir: str, evo_subdir: str) -> None:
         """
@@ -44,23 +77,28 @@ class EvaluationPipeline:
             None
         """
         
-        cora_tum_file_list = [f for f in os.listdir(cora_subdir) if f.endswith(".pyfg")]
-        gt_tum_file_list = [f for f in os.listdir(gt_subdir) if f.endswith(".pyfg")]
+        # Sort filenames lexicographically to ensure correct mapping
+        cora_tum_file_list = sorted([f for f in os.listdir(cora_subdir) if f.endswith(".tum")])
+        gt_tum_file_list = sorted([f for f in os.listdir(gt_subdir) if (f.endswith(".tum") or f.endswith(".txt"))])
 
         # Must map each CORA TUM file to a ground truth TUM file
         assert len(cora_tum_file_list) == len(gt_tum_file_list), "Number of CORA TUM files must match number of ground truth TUM files"
 
-        # TODO: Implement mapping of CORA TUM files to ground truth TUM files
         cora_gt_dict = {}
 
-        # TODO: Check how os.listdir orders filenames
         for cora_tum_file, gt_tum_file in zip(cora_tum_file_list, gt_tum_file_list):
             cora_gt_dict[cora_tum_file] = gt_tum_file
+
+        if os.path.exists(os.path.join(evo_subdir, "cora")):
+            delete_subdir_contents(os.path.join(evo_subdir, "cora"))
+
+        cora_comparison_subdir = create_subdir(evo_subdir, "cora")
 
         for cora_tum_file, gt_tum_file in cora_gt_dict.items():
             cora_tum_file_path = os.path.join(cora_subdir, cora_tum_file)
             gt_tum_file_path = os.path.join(gt_subdir, gt_tum_file)
-            self.generate_evo_comparison(cora_tum_file_path, gt_tum_file_path, evo_subdir, use_gt=True)
+            evo_comparison_subdir = create_subdir(cora_comparison_subdir, f"{cora_tum_file}_vs_{gt_tum_file}")
+            self.generate_evo_comparison(cora_tum_file_path, gt_tum_file_path, evo_comparison_subdir, use_gt=True)
 
     def compare_dcora_gt(self, dcora_subdir: str, gt_subdir: str, evo_subdir: str) -> None:
         """
@@ -78,24 +116,30 @@ class EvaluationPipeline:
         Returns:
             None
         """
-        
-        dcora_tum_file_list = [f for f in os.listdir(dcora_subdir) if f.endswith(".pyfg")]
-        gt_tum_file_list = [f for f in os.listdir(gt_subdir) if f.endswith(".pyfg")]
+
+        # Sort filenames lexicographically to ensure correct mapping
+        dcora_tum_file_list = sorted([f for f in os.listdir(dcora_subdir) if f.endswith(".tum")])
+        gt_tum_file_list = sorted([f for f in os.listdir(gt_subdir) if (f.endswith(".tum") or f.endswith(".txt"))])
 
         # Must map each DCORA TUM file to a ground truth TUM file
         assert len(dcora_tum_file_list) == len(gt_tum_file_list), "Number of DCORA TUM files must match number of ground truth TUM files"
 
-        # TODO: Implement mapping of DCORA TUM files to ground truth TUM files
         dcora_gt_dict = {}
 
-        # TODO: Check how os.listdir orders filenames
         for dcora_tum_file, gt_tum_file in zip(dcora_tum_file_list, gt_tum_file_list):
             dcora_gt_dict[dcora_tum_file] = gt_tum_file
+
+        # Prevents bug where evo commands would hang if comparisons already existed
+        if os.path.exists(os.path.join(evo_subdir, "dcora")):
+            delete_subdir_contents(os.path.join(evo_subdir, "dcora"))
+
+        dcora_comparison_subdir = create_subdir(evo_subdir, "dcora")
 
         for dcora_tum_file, gt_tum_file in dcora_gt_dict.items():
             dcora_tum_file_path = os.path.join(dcora_subdir, dcora_tum_file)
             gt_tum_file_path = os.path.join(gt_subdir, gt_tum_file)
-            self.generate_evo_comparison(dcora_tum_file_path, gt_tum_file_path, evo_subdir, use_gt=True)
+            evo_comparison_subdir = create_subdir(dcora_comparison_subdir, f"{dcora_tum_file}_vs_{gt_tum_file}")
+            self.generate_evo_comparison(dcora_tum_file_path, gt_tum_file_path, evo_comparison_subdir, use_gt=True)
 
     def generate_evo_comparison(self, tum_file_1: str, tum_file_2: str, evo_subdir: str, use_gt: bool = True) -> None:
         """
@@ -110,8 +154,6 @@ class EvaluationPipeline:
         Returns:
             None
         """
-
-        # TODO: Check if evo_traj, evo_ape, evo_rpe, and evo_res are installed and in PATH
 
         # TODO: Create separate folders for each comparison between CORA/DCORA-generated TUM files and ground truth TUM files
         # For now, all output is dumped into the same evo_subdir
@@ -135,6 +177,8 @@ class EvaluationPipeline:
         subprocess.run(evo_ape_command, shell=True, capture_output=True)
         subprocess.run(evo_rpe_command, shell=True, capture_output=True)
         subprocess.run(evo_res_command, shell=True, capture_output=True)
+
+        logger.info(f"{tum_file_1}: EVO comparison generated in {evo_subdir}.")
 
     def process_data_files(self) -> None:
         data_file_list = [f for f in os.listdir(self.data_dir) if f.endswith(".pyfg")]
@@ -164,6 +208,11 @@ class EvaluationPipeline:
 
             # compare CORA and DCORA against ground truth
             # TODO(JV): Use EVO for comparison. Consider using subprocess to call EVO from the command line.
+
+            self.check_evo_tools()
+
+            logger.info(f"{data_file}: Comparing CORA and DCORA against ground truth.")
+        
             self.compare_cora_gt(cora_subdir, ground_truth_subdir, evo_subdir)
             self.compare_dcora_gt(dcora_subdir, ground_truth_subdir, evo_subdir)
             
