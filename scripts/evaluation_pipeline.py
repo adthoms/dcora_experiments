@@ -1,8 +1,16 @@
-import sys
 import argparse
+import copy
+import csv
 import os
 import shutil
-import subprocess
+import sys
+from typing import Dict, List, Tuple
+
+import matplotlib.pyplot as plt
+from evo.core import metrics
+from evo.core.trajectory import PoseTrajectory3D
+from evo.core.units import Unit
+from evo.tools import file_interface, plot
 from py_factor_graph.io.pyfg_file import read_from_pyfg_file
 from py_factor_graph.io.tum_file import save_robot_trajectories_to_tum_file
 from py_factor_graph.utils.logging_utils import logger
@@ -15,7 +23,12 @@ def create_subdir(dir: str, subdir_name: str) -> str:
     return subdir_path
 
 
+def is_dir_empty(dir: str) -> bool:
+    return not any(os.scandir(dir))
+
+
 def delete_subdir_contents(subdir_path: str) -> None:
+    logger.info(f"Deleting contents of {subdir_path} ...")
     try:
         with os.scandir(subdir_path) as it:
             for entry in it:
@@ -29,252 +42,280 @@ def delete_subdir_contents(subdir_path: str) -> None:
         logger.error(f"Error deleting contents of {subdir_path}.")
 
 
+def get_sorted_file_list(subdir_path: str, file_extensions=[".txt"]):
+    file_list = [
+        os.path.join(subdir_path, f)
+        for f in os.listdir(subdir_path)
+        if any(f.endswith(ext) for ext in file_extensions)
+    ]
+    return sorted(file_list)
+
+
+def get_file_name_from_path(file_path: str) -> str:
+    return os.path.splitext(os.path.basename(file_path))[0]
+
+
+def append_stats_to_csv(stats_dict: Dict[str, str], csv_file: str) -> None:
+    with open(csv_file, "a", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=list(stats_dict.keys()))
+        if file.tell() == 0:
+            writer.writeheader()
+        writer.writerow(stats_dict)
+
+
+def align_trajectories(
+    tum_traj_est_file: str,
+    evo_traj_ref: PoseTrajectory3D,
+    correct_scale: bool = False,
+    correct_only_scale: bool = False,
+):
+    evo_traj_est = file_interface.read_tum_trajectory_file(tum_traj_est_file)
+    evo_traj_est_aligned = copy.deepcopy(evo_traj_est)
+    evo_traj_est_aligned.align(
+        evo_traj_ref, correct_scale=correct_scale, correct_only_scale=correct_only_scale
+    )
+    return evo_traj_est_aligned
+
+
+def plot_trajectories(
+    cora_traj: PoseTrajectory3D,
+    dcora_traj: PoseTrajectory3D,
+    gt_traj: PoseTrajectory3D,
+    agent_subdir: str,
+):
+    fig = plt.figure()
+    traj_by_label = {"CORA": cora_traj, "DCORA": dcora_traj, "Ground Truth": gt_traj}
+    plot.trajectories(fig, traj_by_label, plot.PlotMode.xyz)
+    # TODO(JV): make the plots prettier
+    plt.savefig(os.path.join(agent_subdir, "traj.png"))
+
+
+def calculate_stats(
+    data_pair_list: List[Tuple[PoseTrajectory3D, PoseTrajectory3D]],
+    algorithm_name_list: List[str],
+    agent_subdir: str,
+) -> None:
+    assert len(data_pair_list) == len(algorithm_name_list), logger.critical(
+        "The number of data pairs must match the number of algorithms!"
+    )
+    ape_stats_csv_file = os.path.join(agent_subdir, f"ape_stats.csv")
+    rpe_stats_csv_file = os.path.join(agent_subdir, f"rpe_stats.csv")
+    ape_stats_dict = dict()
+    rpe_stats_dict = dict()
+
+    for i, data_pair in enumerate(data_pair_list):
+
+        # set algorithm name
+        algorithm_name = algorithm_name_list[i]
+        ape_stats_dict["alg"] = f"{algorithm_name}"
+        rpe_stats_dict["alg"] = f"{algorithm_name}"
+
+        # calculate APE
+        ape_metric = metrics.APE(metrics.PoseRelation.translation_part)
+        ape_metric.process_data(data_pair)
+        ape_stats_dict.update(ape_metric.get_all_statistics())
+
+        # calculate RPE
+        rpe_metric = metrics.RPE(
+            pose_relation=metrics.PoseRelation.rotation_angle_deg,
+            delta=1,
+            delta_unit=Unit.frames,
+            all_pairs=False,
+        )
+        rpe_metric.process_data(data_pair)
+        rpe_stats_dict.update(rpe_metric.get_all_statistics())
+
+        # save to csv file
+        append_stats_to_csv(ape_stats_dict, ape_stats_csv_file)
+        append_stats_to_csv(rpe_stats_dict, rpe_stats_csv_file)
+
+
 class EvaluationPipeline:
     def __init__(self, args):
         self.data_dir = args.data_dir
         self.output_dir = args.output_dir
+        self.override_cora_results = args.override_cora_results
+        self.override_dcora_results = args.override_dcora_results
+        self.override_ground_truth_results = args.override_ground_truth_results
+        self.override_evo_results = args.override_evo_results
+
+    def _cora_filter(self, data_file_path: str, cora_subdir: str) -> None:
+        # TODO(AT): create custom CORA executable that will operate on data_file and save its output to cora_subdir
+        pass
+
+    def _dcora_filter(self, data_file_path: str, dcora_subdir: str) -> None:
+        # TODO(AT): create custom DCORA executable that will operate on data_file and save its output to dcora_subdir
+        pass
+
+    def _ground_truth_filter(
+        self, data_file_path: str, ground_truth_subdir: str, use_pose_idx: bool = True
+    ) -> None:
+        save_robot_trajectories_to_tum_file(
+            read_from_pyfg_file(data_file_path),
+            ground_truth_subdir,
+            use_pose_idx=use_pose_idx,
+        )
+
+    def _evo_filter(
+        self,
+        cora_subdir: str,
+        dcora_subdir: str,
+        ground_truth_subdir: str,
+        evo_subdir: str,
+    ) -> None:
+        # get sorted file lists
+        cora_tum_file_list = get_sorted_file_list(cora_subdir)
+        dcora_tum_file_list = get_sorted_file_list(dcora_subdir)
+        gt_tum_file_list = get_sorted_file_list(ground_truth_subdir)
+        assert len(cora_tum_file_list) == len(gt_tum_file_list), logger.critical(
+            "Number of CORA TUM files must match number of ground truth TUM files!"
+        )
+        assert len(dcora_tum_file_list) == len(gt_tum_file_list), logger.critical(
+            "Number of DCORA TUM files must match number of ground truth TUM files!"
+        )
+
+        # apply filter to each agent
+        for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
+            cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
+        ):
+            # check that all files belong to same agent
+            agent_id = get_file_name_from_path(gt_tum_file)[-1]
+            cora_agent_id = get_file_name_from_path(cora_tum_file)[-1]
+            dcora_agent_id = get_file_name_from_path(dcora_tum_file)[-1]
+            assert cora_agent_id == agent_id, logger.critical(
+                f"{cora_tum_file} and {gt_tum_file} do not belong to same agent!"
+            )
+            assert dcora_agent_id == agent_id, logger.critical(
+                f"{dcora_tum_file} and {gt_tum_file} do not belong to same agent!"
+            )
+
+            # save results in agent subdirectory
+            agent_subdir = create_subdir(evo_subdir, f"{agent_id}")
+            logger.info(f"Saving evo results to {agent_subdir} ...")
+
+            # align trajectories
+            gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
+            cora_traj_aligned = align_trajectories(cora_tum_file, gt_traj)
+            dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
+
+            # plot trajectories
+            plot_trajectories(
+                cora_traj_aligned, dcora_traj_aligned, gt_traj, agent_subdir
+            )
+
+            # calculate stats
+            data_pair_list = [
+                (gt_traj, cora_traj_aligned),
+                (gt_traj, dcora_traj_aligned),
+            ]
+            algorithm_name_list = ["cora", "dcora"]
+            calculate_stats(data_pair_list, algorithm_name_list, agent_subdir)
 
     def evaluate(self) -> None:
-        logger.info(f"Evaluation Pipeline starting...")
-        self.process_data_files()
-        logger.info(f"Evaluation Pipeline finished.")
-
-    def check_evo_tools(self) -> None:
-        """
-        Checks for evo, evo_traj, evo_ape, evo_rpe, and evo_res in PATH.
-
-        Raises:
-            FileNotFoundError: If any of the evo tools are not found in PATH.
-
-        Returns:
-            None
-        """
-        # *nix OS family: use which command
-
-        evo_commands = ["evo", "evo_traj", "evo_ape", "evo_rpe", "evo_res"]
-
-        for evo_command in evo_commands:
-            if (
-                subprocess.call(
-                    ["which", evo_command],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT,
-                )
-                != 0
-            ):
-                raise FileNotFoundError(f"{evo_command} not found in PATH")
-
-    def compare_cora_gt(
-        self, cora_subdir: str, gt_subdir: str, evo_subdir: str
-    ) -> None:
-        """
-        Compare CORA-generated TUM files against ground truth TUM files.
-        Temporarily using placeholder TUM files for CORA.
-
-        Args:
-            cora_subdir (str): Directory containing CORA-generated TUM files.
-            gt_subdir (str): Directory containing ground truth TUM files.
-            evo_subdir (str): Directory to save evo results.
-
-        Raises:
-            AssertionError: If the number of CORA TUM files are not equal to the number of ground truth TUM files.
-
-        Returns:
-            None
-        """
-
-        # Sort filenames lexicographically to ensure correct mapping
-        cora_tum_file_list = sorted(
-            [f for f in os.listdir(cora_subdir) if f.endswith(".tum")]
-        )
-        gt_tum_file_list = sorted(
-            [
-                f
-                for f in os.listdir(gt_subdir)
-                if (f.endswith(".tum") or f.endswith(".txt"))
-            ]
-        )
-
-        # Must map each CORA TUM file to a ground truth TUM file
-        assert len(cora_tum_file_list) == len(
-            gt_tum_file_list
-        ), "Number of CORA TUM files must match number of ground truth TUM files"
-
-        cora_gt_dict = {}
-
-        for cora_tum_file, gt_tum_file in zip(cora_tum_file_list, gt_tum_file_list):
-            cora_gt_dict[cora_tum_file] = gt_tum_file
-
-        if os.path.exists(os.path.join(evo_subdir, "cora")):
-            delete_subdir_contents(os.path.join(evo_subdir, "cora"))
-
-        cora_comparison_subdir = create_subdir(evo_subdir, "cora")
-
-        for cora_tum_file, gt_tum_file in cora_gt_dict.items():
-            cora_tum_file_path = os.path.join(cora_subdir, cora_tum_file)
-            gt_tum_file_path = os.path.join(gt_subdir, gt_tum_file)
-            evo_comparison_subdir = create_subdir(
-                cora_comparison_subdir, f"{cora_tum_file}_vs_{gt_tum_file}"
-            )
-            self.generate_evo_comparison(
-                cora_tum_file_path, gt_tum_file_path, evo_comparison_subdir, use_gt=True
-            )
-
-    def compare_dcora_gt(
-        self, dcora_subdir: str, gt_subdir: str, evo_subdir: str
-    ) -> None:
-        """
-        Compare DCORA-generated TUM files against ground truth TUM files.
-        Temporarily using placeholder TUM files for DCORA.
-
-        Args:
-            dcora_subdir (str): Directory containing DCORA-generated TUM files.
-            gt_subdir (str): Directory containing ground truth TUM files.
-            evo_subdir (str): Directory to save evo results.
-
-        Raises:
-            AssertionError: If the number of DCORA TUM files are not equal to the number of ground truth TUM files.
-
-        Returns:
-            None
-        """
-
-        # Sort filenames lexicographically to ensure correct mapping
-        dcora_tum_file_list = sorted(
-            [f for f in os.listdir(dcora_subdir) if f.endswith(".tum")]
-        )
-        gt_tum_file_list = sorted(
-            [
-                f
-                for f in os.listdir(gt_subdir)
-                if (f.endswith(".tum") or f.endswith(".txt"))
-            ]
-        )
-
-        # Must map each DCORA TUM file to a ground truth TUM file
-        assert len(dcora_tum_file_list) == len(
-            gt_tum_file_list
-        ), "Number of DCORA TUM files must match number of ground truth TUM files"
-
-        dcora_gt_dict = {}
-
-        for dcora_tum_file, gt_tum_file in zip(dcora_tum_file_list, gt_tum_file_list):
-            dcora_gt_dict[dcora_tum_file] = gt_tum_file
-
-        # Prevents bug where evo commands would hang if comparisons already existed
-        if os.path.exists(os.path.join(evo_subdir, "dcora")):
-            delete_subdir_contents(os.path.join(evo_subdir, "dcora"))
-
-        dcora_comparison_subdir = create_subdir(evo_subdir, "dcora")
-
-        for dcora_tum_file, gt_tum_file in dcora_gt_dict.items():
-            dcora_tum_file_path = os.path.join(dcora_subdir, dcora_tum_file)
-            gt_tum_file_path = os.path.join(gt_subdir, gt_tum_file)
-            evo_comparison_subdir = create_subdir(
-                dcora_comparison_subdir, f"{dcora_tum_file}_vs_{gt_tum_file}"
-            )
-            self.generate_evo_comparison(
-                dcora_tum_file_path,
-                gt_tum_file_path,
-                evo_comparison_subdir,
-                use_gt=True,
-            )
-
-    def generate_evo_comparison(
-        self, tum_file_1: str, tum_file_2: str, evo_subdir: str, use_gt: bool = True
-    ) -> None:
-        """
-        Run evo_traj, evo_ape, evo_rpe, and evo_res on inputted TUM files.
-
-        Args:
-            tum_file_1 (str): Filepath for the first TUM file.
-            tum_file_2 (str): Filepath for the second TUM file.
-            evo_subdir (str): Directory to save evo results.
-            use_gt (bool, optional): Whether to treat tum_file_2 as ground truth. Defaults to True.
-
-        Returns:
-            None
-        """
-
-        # TODO: Create separate folders for each comparison between CORA/DCORA-generated TUM files and ground truth TUM files
-        # For now, all output is dumped into the same evo_subdir
-
-        evo_traj_command = ""
-
-        if use_gt:
-            evo_traj_command = f"evo_traj tum {tum_file_1} --ref={tum_file_2} -p --plot_mode=xz --save_plot {evo_subdir}/traj.png"
-        else:
-            evo_traj_command = f"evo_traj tum {tum_file_1} {tum_file_2} -p --plot_mode=xz --save_plot {evo_subdir}/traj.png"
-
-        # To obtain png files of plots, use --save_plot flag instead of --save_results flag
-        evo_ape_command = f"evo_ape tum {tum_file_1} {tum_file_2} -va --plot --plot_mode=xz --save_results {evo_subdir}/ape.zip --save_plot {evo_subdir}/ape.png"
-
-        evo_rpe_command = f"evo_rpe tum {tum_file_1} {tum_file_2} -va --plot --plot_mode=xz --save_results {evo_subdir}/rpe.zip --save_plot {evo_subdir}/rpe.png"
-
-        # Res will plot APE and save the statistics in a table
-        evo_res_command = f"evo_res {evo_subdir}/*.zip --save_table {evo_subdir}/res_table.csv --save_plot {evo_subdir}/res.png"
-
-        subprocess.run(evo_traj_command, shell=True, capture_output=True)
-        subprocess.run(evo_ape_command, shell=True, capture_output=True)
-        subprocess.run(evo_rpe_command, shell=True, capture_output=True)
-        subprocess.run(evo_res_command, shell=True, capture_output=True)
-
-        logger.info(f"{tum_file_1}: EVO comparison generated in {evo_subdir}.")
-
-    def process_data_files(self) -> None:
+        logger.info("Starting evaluation pipeline...")
         data_file_list = [f for f in os.listdir(self.data_dir) if f.endswith(".pyfg")]
         for data_file in data_file_list:
-            # create separate directory for each data file
-            data_file_out_dir = create_subdir(self.output_dir, data_file)
-
-            # and add subdirectories for ground truth, cora, and dcora
-            ground_truth_subdir = create_subdir(data_file_out_dir, "ground_truth")
-            cora_subdir = create_subdir(data_file_out_dir, "cora")
-            dcora_subdir = create_subdir(data_file_out_dir, "dcora")
-            evo_subdir = create_subdir(data_file_out_dir, "evo")
-
-            # get data file path
+            # get data file
             data_file_path = os.path.join(self.data_dir, data_file)
 
-            # process data file to obtain ground truth
-            save_robot_trajectories_to_tum_file(
-                read_from_pyfg_file(data_file_path), ground_truth_subdir
+            # set output directory for data file
+            data_file_out_dir = create_subdir(
+                self.output_dir, get_file_name_from_path(data_file)
             )
 
-            # process data file with CORA
-            # TODO(AT): create custom CORA executable that will operate on data_file and save its output to a CORA directory in data_file_out_dir
+            # set subdirectories of output directory
+            cora_subdir = create_subdir(data_file_out_dir, "cora")
+            dcora_subdir = create_subdir(data_file_out_dir, "dcora")
+            ground_truth_subdir = create_subdir(data_file_out_dir, "ground_truth")
+            evo_subdir = create_subdir(data_file_out_dir, "evo")
 
-            # process data file with DCORA
-            # TODO(AT): create custom DCORA executable that will operate on data_file and save its output to a DCORA directory in data_file_out_dir
+            # clear subdirectories
+            if self.override_cora_results:
+                delete_subdir_contents(cora_subdir)
+            if self.override_dcora_results:
+                delete_subdir_contents(dcora_subdir)
+            if self.override_ground_truth_results:
+                delete_subdir_contents(ground_truth_subdir)
+            if self.override_evo_results:
+                delete_subdir_contents(evo_subdir)
 
-            # compare CORA and DCORA against ground truth
-            # TODO(JV): Use EVO for comparison. Consider using subprocess to call EVO from the command line.
+            # apply pipes and filters
+            if is_dir_empty(ground_truth_subdir):
+                logger.info(
+                    f"Applying Ground Truth filter to data file: {data_file} ..."
+                )
+                self._ground_truth_filter(data_file_path, ground_truth_subdir)
+            else:
+                logger.info(
+                    f"Ground truth results exist for data file: {data_file}. Skipping Ground Truth filter."
+                )
 
-            self.check_evo_tools()
+            if is_dir_empty(cora_subdir):
+                logger.info(f"Applying CORA filter to data file: {data_file} ...")
+                self._cora_filter(data_file_path, cora_subdir)
+            else:
+                logger.info(
+                    f"CORA results exist for data file: {data_file}. Skipping CORA filter."
+                )
 
-            logger.info(f"{data_file}: Comparing CORA and DCORA against ground truth.")
-            self.compare_cora_gt(cora_subdir, ground_truth_subdir, evo_subdir)
-            self.compare_dcora_gt(dcora_subdir, ground_truth_subdir, evo_subdir)
+            if is_dir_empty(dcora_subdir):
+                logger.info(f"Applying DCORA filter to data file: {data_file} ...")
+                self._dcora_filter(data_file_path, dcora_subdir)
+            else:
+                logger.info(
+                    f"DCORA results exist for data file: {data_file}. Skipping DCORA filter."
+                )
+
+            if is_dir_empty(evo_subdir):
+                logger.info(f"Applying EVO filter to data file: {data_file} ...")
+                self._evo_filter(
+                    cora_subdir, dcora_subdir, ground_truth_subdir, evo_subdir
+                )
+            else:
+                logger.info(
+                    f"EVO results exist for data file: {data_file}. Skipping EVO filter."
+                )
+
+        logger.info("Evaluation pipeline complete.")
 
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description="This script is used to compare CORA and DCORA on benchmark datasets obeying PyFG formatting."
+        description="This script is used to compare CORA and DCORA on datasets obeying PyFG formatting."
     )
     parser.add_argument(
         "--data_dir",
         type=str,
         required=True,
-        help="directory containing *.pfyg data files for comparison",
+        help="directory containing *.pfyg data files for evaluation",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
         required=True,
-        help="directory containing TUM formatted trajectories for comparison",
+        help="directory where evaluation results are saved",
+    )
+    parser.add_argument(
+        "--override_cora_results",
+        action="store_true",
+        help="Flag to override existing cora results",
+    )
+    parser.add_argument(
+        "--override_dcora_results",
+        action="store_true",
+        help="Flag to override existing dcora results",
+    )
+    parser.add_argument(
+        "--override_ground_truth_results",
+        action="store_true",
+        help="Flag to override existing ground truth results",
+    )
+    parser.add_argument(
+        "--override_evo_results",
+        action="store_true",
+        help="Flag to override existing evo results",
     )
 
-    # parse args and process
     args = parser.parse_args()
     evaluation_pipeline = EvaluationPipeline(args)
     evaluation_pipeline.evaluate()
