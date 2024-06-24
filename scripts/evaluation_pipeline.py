@@ -9,7 +9,6 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 from evo.core import metrics
 from evo.core.trajectory import PoseTrajectory3D
-from evo.core.units import Unit
 from evo.tools import file_interface, plot
 from py_factor_graph.io.pyfg_file import read_from_pyfg_file
 from py_factor_graph.io.tum_file import save_robot_trajectories_to_tum_file
@@ -91,43 +90,58 @@ def plot_trajectories(
 
 
 def calculate_stats(
-    data_pair_list: List[Tuple[PoseTrajectory3D, PoseTrajectory3D]],
+    traj_pair_list: List[Tuple[PoseTrajectory3D, PoseTrajectory3D]],
     algorithm_name_list: List[str],
     agent_subdir: str,
 ) -> None:
-    assert len(data_pair_list) == len(algorithm_name_list), logger.critical(
+    assert len(traj_pair_list) == len(algorithm_name_list), logger.critical(
         "The number of data pairs must match the number of algorithms!"
     )
-    ape_stats_csv_file = os.path.join(agent_subdir, f"ape_stats.csv")
-    rpe_stats_csv_file = os.path.join(agent_subdir, f"rpe_stats.csv")
-    ape_stats_dict = dict()
-    rpe_stats_dict = dict()
+    ape_trans_stats_csv_file = os.path.join(agent_subdir, f"ape_trans_stats.csv")
+    ape_rot_stats_csv_file = os.path.join(agent_subdir, f"ape_rot_stats.csv")
+    rpe_trans_stats_csv_file = os.path.join(agent_subdir, f"rpe_trans_stats.csv")
+    rpe_rot_stats_csv_file = os.path.join(agent_subdir, f"rpe_rot_stats.csv")
+    ape_trans_stats_dict = dict()
+    ape_rot_stats_dict = dict()
+    rpe_trans_stats_dict = dict()
+    rpe_rot_stats_dict = dict()
 
-    for i, data_pair in enumerate(data_pair_list):
+    for i, data_pair in enumerate(traj_pair_list):
 
         # set algorithm name
         algorithm_name = algorithm_name_list[i]
-        ape_stats_dict["alg"] = f"{algorithm_name}"
-        rpe_stats_dict["alg"] = f"{algorithm_name}"
+        ape_trans_stats_dict["alg"] = f"{algorithm_name}"
+        ape_rot_stats_dict["alg"] = f"{algorithm_name}"
+        rpe_trans_stats_dict["alg"] = f"{algorithm_name}"
+        rpe_rot_stats_dict["alg"] = f"{algorithm_name}"
 
-        # calculate APE
-        ape_metric = metrics.APE(metrics.PoseRelation.translation_part)
-        ape_metric.process_data(data_pair)
-        ape_stats_dict.update(ape_metric.get_all_statistics())
+        # calculate APE (trans, rot)
+        ape_trans_metric = metrics.APE(metrics.PoseRelation.translation_part)
+        ape_trans_metric.process_data(data_pair)
+        ape_trans_stats_dict.update(ape_trans_metric.get_all_statistics())
+        ape_rot_metric = metrics.APE(metrics.PoseRelation.rotation_part)
+        ape_rot_metric.process_data(data_pair)
+        ape_rot_stats_dict.update(ape_rot_metric.get_all_statistics())
 
-        # calculate RPE
-        rpe_metric = metrics.RPE(
-            pose_relation=metrics.PoseRelation.rotation_angle_deg,
-            delta=1,
-            delta_unit=Unit.frames,
-            all_pairs=False,
+        # calculate RPE (trans, rot)
+        rpe_trans_metric = metrics.RPE(
+            pose_relation=metrics.PoseRelation.translation_part,
+            all_pairs=True,  # use all pose pairs
         )
-        rpe_metric.process_data(data_pair)
-        rpe_stats_dict.update(rpe_metric.get_all_statistics())
+        rpe_trans_metric.process_data(data_pair)
+        rpe_trans_stats_dict.update(rpe_trans_metric.get_all_statistics())
+        rpe_rot_metric = metrics.RPE(
+            pose_relation=metrics.PoseRelation.rotation_part,
+            all_pairs=True,  # use all pose pairs
+        )
+        rpe_rot_metric.process_data(data_pair)
+        rpe_rot_stats_dict.update(rpe_rot_metric.get_all_statistics())
 
         # save to csv file
-        append_stats_to_csv(ape_stats_dict, ape_stats_csv_file)
-        append_stats_to_csv(rpe_stats_dict, rpe_stats_csv_file)
+        append_stats_to_csv(ape_trans_stats_dict, ape_trans_stats_csv_file)
+        append_stats_to_csv(ape_rot_stats_dict, ape_rot_stats_csv_file)
+        append_stats_to_csv(rpe_trans_stats_dict, rpe_trans_stats_csv_file)
+        append_stats_to_csv(rpe_rot_stats_dict, rpe_rot_stats_csv_file)
 
 
 class EvaluationPipeline:
@@ -191,7 +205,7 @@ class EvaluationPipeline:
 
             # save results in agent subdirectory
             agent_subdir = create_subdir(evo_subdir, f"{agent_id}")
-            logger.info(f"Saving evo results to {agent_subdir} ...")
+            logger.info(f"Saving agent {agent_id} results to {agent_subdir} ...")
 
             # align trajectories
             gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
@@ -204,12 +218,12 @@ class EvaluationPipeline:
             )
 
             # calculate stats
-            data_pair_list = [
+            traj_pair_list = [
                 (gt_traj, cora_traj_aligned),
                 (gt_traj, dcora_traj_aligned),
             ]
             algorithm_name_list = ["cora", "dcora"]
-            calculate_stats(data_pair_list, algorithm_name_list, agent_subdir)
+            calculate_stats(traj_pair_list, algorithm_name_list, agent_subdir)
 
     def evaluate(self) -> None:
         logger.info("Starting evaluation pipeline...")
@@ -239,7 +253,7 @@ class EvaluationPipeline:
             if self.override_evo_results:
                 delete_subdir_contents(evo_subdir)
 
-            # apply pipes and filters
+            # apply filters
             if is_dir_empty(ground_truth_subdir):
                 logger.info(
                     f"Applying Ground Truth filter to data file: {data_file} ..."
@@ -247,7 +261,7 @@ class EvaluationPipeline:
                 self._ground_truth_filter(data_file_path, ground_truth_subdir)
             else:
                 logger.info(
-                    f"Ground truth results exist for data file: {data_file}. Skipping Ground Truth filter."
+                    f"Ground Truth results exist for data file: {data_file}. Skipping Ground Truth filter."
                 )
 
             if is_dir_empty(cora_subdir):
