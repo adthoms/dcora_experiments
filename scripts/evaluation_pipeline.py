@@ -7,12 +7,17 @@ import sys
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 from evo.core import metrics
 from evo.core.trajectory import PoseTrajectory3D
-from evo.tools import file_interface, plot
+from evo.tools import file_interface
+from evo.tools.plot import PlotMode, prepare_axis, traj, set_aspect_equal
 from py_factor_graph.io.pyfg_file import read_from_pyfg_file
 from py_factor_graph.io.tum_file import save_robot_trajectories_to_tum_file
 from py_factor_graph.utils.logging_utils import logger
+
+FONT_SIZE = 10
+DPI = 1200
 
 
 def create_subdir(dir: str, subdir_name: str) -> str:
@@ -41,7 +46,9 @@ def delete_subdir_contents(subdir_path: str) -> None:
         logger.error(f"Error deleting contents of {subdir_path}.")
 
 
-def get_sorted_file_list(subdir_path: str, file_extensions=[".txt"]):
+def get_sorted_file_list(
+    subdir_path: str, file_extensions=[".txt", ".tum"]
+) -> List[str]:
     file_list = [
         os.path.join(subdir_path, f)
         for f in os.listdir(subdir_path)
@@ -83,10 +90,44 @@ def plot_trajectories(
     agent_subdir: str,
 ):
     fig = plt.figure()
-    traj_by_label = {"CORA": cora_traj, "DCORA": dcora_traj, "Ground Truth": gt_traj}
-    plot.trajectories(fig, traj_by_label, plot.PlotMode.xyz)
-    # TODO(JV): make the plots prettier
-    plt.savefig(os.path.join(agent_subdir, "traj.png"))
+    trajectories = {"CORA": cora_traj, "DCORA": dcora_traj, "Ground Truth": gt_traj}
+    traj_colors = ["red", "blue", "black"]
+
+    # check for 2D or 3D plot
+    plot_mode = PlotMode.xyz
+    isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
+    if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
+        plot_mode = PlotMode.xy
+
+    # plot trajectories on aingle axis
+    ax = prepare_axis(fig, plot_mode)
+    for idx, (name, traj_path) in enumerate(trajectories.items()):
+        line_style = "--" if name == "Ground Truth" else "-"
+        traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
+
+    # Set axis to equal size
+    set_aspect_equal(ax)
+
+    # Set background colors
+    ax.set_facecolor("white")
+    ax.legend(facecolor="white")
+
+    # Set edge colors
+    ax.spines["top"].set_color("black")
+    ax.spines["right"].set_color("black")
+    ax.spines["left"].set_color("black")
+    ax.spines["bottom"].set_color("black")
+
+    # Set grid colors
+    ax.grid(color="gray")
+
+    # Set labels
+    ax.set_xlabel("x (m)", fontsize=FONT_SIZE)
+    ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
+
+    # save figure
+    plt.savefig(os.path.join(agent_subdir, "traj.png"), dpi=DPI)
+    plt.close()
 
 
 def calculate_stats(
