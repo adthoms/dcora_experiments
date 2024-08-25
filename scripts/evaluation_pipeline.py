@@ -229,6 +229,123 @@ def calculate_stats(
         append_stats_to_csv(rpe_trans_stats_dict, rpe_trans_stats_csv_file)
         append_stats_to_csv(rpe_rot_stats_dict, rpe_rot_stats_csv_file)
 
+def calculate_combined_stats(
+        cora_tum_file_list: List[str],
+        dcora_tum_file_list: List[str],
+        gt_tum_file_list: List[str],
+        output_subdir: str,
+) -> None:
+    """Calculate weighted average of all agents' statistics; weight corresponds to the number of poses each agent has.
+
+    Args:
+        cora_tum_file_list (List[str]): List of CORA TUM files
+        dcora_tum_file_list (List[str]): List of DCORA TUM files
+        gt_tum_file_list (List[str]): List of Ground Truth TUM files
+    
+    Returns:
+        None
+    """
+
+    num_cora_trajectories = 0
+    num_dcora_trajectories = 0
+    # get total number of CORA/DCORA poses
+    for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
+        cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
+    ):
+        # align trajectories
+        gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
+        cora_traj_aligned = align_trajectories(cora_tum_file, gt_traj)
+        dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
+
+        num_cora_trajectories += cora_traj_aligned.num_poses
+        num_dcora_trajectories += dcora_traj_aligned.num_poses
+
+    # calculate weighted average of statistics
+    algorithm_name_list = ["cora", "dcora"]
+
+    ape_trans_stats_csv_file = os.path.join(output_subdir, f"ape_trans_stats.csv")
+    ape_rot_stats_csv_file = os.path.join(output_subdir, f"ape_rot_stats.csv")
+    rpe_trans_stats_csv_file = os.path.join(output_subdir, f"rpe_trans_stats.csv")
+    rpe_rot_stats_csv_file = os.path.join(output_subdir, f"rpe_rot_stats.csv")
+
+    ape_trans_metric_dict = dict()
+    ape_rot_metric_dict = dict()
+    rpe_trans_metric_dict = dict()
+    rpe_rot_metric_dict = dict()
+
+    for algorithm_name in algorithm_name_list:
+        ape_trans_metric_dict["alg"] = f"{algorithm_name}"
+        ape_rot_metric_dict["alg"] = f"{algorithm_name}"
+        rpe_trans_metric_dict["alg"] = f"{algorithm_name}"
+        rpe_rot_metric_dict["alg"] = f"{algorithm_name}"
+
+        for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
+            cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
+        ):
+            # align trajectories
+            gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
+            cora_traj_aligned = align_trajectories(cora_tum_file, gt_traj)
+            dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
+
+            # calculate stats
+            traj_pair = None
+            agent_weight = 0.0
+
+            if algorithm_name == "cora":
+                traj_pair = (gt_traj, cora_traj_aligned)
+                agent_weight = cora_traj_aligned.num_poses / num_cora_trajectories
+            else:
+                traj_pair = (gt_traj, dcora_traj_aligned)
+                agent_weight = dcora_traj_aligned.num_poses / num_dcora_trajectories
+
+            # calculate APE (trans, rot)
+            ape_trans_metric = metrics.APE(metrics.PoseRelation.translation_part)
+            ape_trans_metric.process_data(traj_pair)
+            # ape_trans_stats_dict.update(ape_trans_metric.get_all_statistics())
+            ape_rot_metric = metrics.APE(metrics.PoseRelation.rotation_part)
+            ape_rot_metric.process_data(traj_pair)
+            # ape_rot_stats_dict.update(ape_rot_metric.get_all_statistics())
+
+            # calculate RPE (trans, rot)
+            rpe_trans_metric = metrics.RPE(
+                pose_relation=metrics.PoseRelation.translation_part,
+                all_pairs=True,  # use all pose pairs
+            )
+            rpe_trans_metric.process_data(traj_pair)
+            # rpe_trans_stats_dict.update(rpe_trans_metric.get_all_statistics())
+            rpe_rot_metric = metrics.RPE(
+                pose_relation=metrics.PoseRelation.rotation_part,
+                all_pairs=True,  # use all pose pairs
+            )
+            rpe_rot_metric.process_data(traj_pair)
+            # rpe_rot_stats_dict.update(rpe_rot_metric.get_all_statistics())
+
+            for stat, value in ape_trans_metric.get_all_statistics().items():
+                ape_trans_metric_dict.setdefault(stat, 0)
+                ape_trans_metric_dict[stat] += value * agent_weight
+            
+            for stat, value in ape_rot_metric.get_all_statistics().items():
+                ape_rot_metric_dict.setdefault(stat, 0)
+                ape_rot_metric_dict[stat] += value * agent_weight
+            
+            for stat, value in rpe_trans_metric.get_all_statistics().items():
+                rpe_trans_metric_dict.setdefault(stat, 0)
+                rpe_trans_metric_dict[stat] += value * agent_weight
+            
+            for stat, value in rpe_rot_metric.get_all_statistics().items():
+                rpe_rot_metric_dict.setdefault(stat, 0)
+                rpe_rot_metric_dict[stat] += value * agent_weight
+        append_stats_to_csv(ape_trans_metric_dict, ape_trans_stats_csv_file)
+        append_stats_to_csv(ape_rot_metric_dict, ape_rot_stats_csv_file)
+        append_stats_to_csv(rpe_trans_metric_dict, rpe_trans_stats_csv_file)
+        append_stats_to_csv(rpe_rot_metric_dict, rpe_rot_stats_csv_file)
+
+        # Clear dictionaries for next algorithm
+        ape_trans_metric_dict = dict()
+        ape_rot_metric_dict = dict()
+        rpe_trans_metric_dict = dict()
+        rpe_rot_metric_dict = dict()
+
 
 class EvaluationPipeline:
     def __init__(self, args):
@@ -325,13 +442,19 @@ class EvaluationPipeline:
             algorithm_name_list = ["cora", "dcora"]
             calculate_stats(traj_pair_list, algorithm_name_list, agent_subdir)
 
+        combined_subdir = create_subdir(evo_subdir, "combined")
+        logger.info(f"Saving combined trajectory output and weighted average statistics to {combined_subdir} ...")
         output_traj_plot(
             ax_combined_traj, 
             "traj_combined", 
-            evo_subdir,
+            combined_subdir,
             override_legend=True,
             # legend_loc=COMBINED_TRAJ_LEGEND_LOC, 
             legend_offset=COMBINED_TRAJ_LEGEND_OFFSET,
+        )
+
+        calculate_combined_stats(
+            cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list, combined_subdir
         )
 
     def evaluate(self) -> None:
