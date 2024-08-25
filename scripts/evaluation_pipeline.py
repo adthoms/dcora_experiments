@@ -7,6 +7,7 @@ import sys
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 from evo.core import metrics
 from evo.core.trajectory import PoseTrajectory3D
@@ -19,8 +20,8 @@ from py_factor_graph.utils.logging_utils import logger
 FONT_SIZE = 10
 DPI = 1200
 
-COMBINED_TRAJ_LEGEND_OFFSET = (1.5, 1.0)
-COMBINED_TRAJ_LEGEND_LOC = "upper right"
+COMBINED_TRAJ_LEGEND_OFFSET = (1.15, -0.15)
+COMBINED_TRAJ_LEGEND_LOC = "lower center"
 
 
 def create_subdir(dir: str, subdir_name: str) -> str:
@@ -85,12 +86,14 @@ def align_trajectories(
     )
     return evo_traj_est_aligned
 
+
 def get_plot_mode_by_traj(cora_traj: PoseTrajectory3D, dcora_traj: PoseTrajectory3D, gt_traj: PoseTrajectory3D) -> PlotMode:
     isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
     if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
         return PlotMode.xy
     else:
         return PlotMode.xyz
+
 
 def plot_trajectories(
     cora_traj: PoseTrajectory3D,
@@ -111,41 +114,17 @@ def plot_trajectories(
         line_style = "--" if name == "Ground Truth" else "-"
         traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
 
-    """# Set axis to equal size
-    set_aspect_equal(ax)
-
-    # Set background colors
-    ax.set_facecolor("white")
-    ax.legend(facecolor="white")
-
-    # Set edge colors
-    ax.spines["top"].set_color("black")
-    ax.spines["right"].set_color("black")
-    ax.spines["left"].set_color("black")
-    ax.spines["bottom"].set_color("black")
-
-    # Set grid colors
-    ax.grid(color="gray")
-
-    # Set labels
-    ax.set_xlabel("x (m)", fontsize=FONT_SIZE)
-    ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
-
-    # save figure
-    plt.savefig(os.path.join(agent_subdir, "traj.png"), dpi=DPI)
-    plt.close()"""
-
     output_traj_plot(ax, "traj", agent_subdir)
+
 
 def add_traj_to_plot(
     ax,
     plot_mode: PlotMode,
-    agent_name: str,
     cora_traj: PoseTrajectory3D,
     dcora_traj: PoseTrajectory3D,
     gt_traj: PoseTrajectory3D,
 ):
-    trajectories = {f"CORA_robot_{agent_name}": cora_traj, f"DCORA_robot_{agent_name}": dcora_traj, f"GT_robot_{agent_name}": gt_traj}
+    trajectories = {f"CORA": cora_traj, f"DCORA": dcora_traj, f"Ground Truth": gt_traj}
     traj_colors = ["red", "blue", "black"]
 
     # plot trajectories
@@ -153,19 +132,29 @@ def add_traj_to_plot(
         line_style = "--" if name == "Ground Truth" else "-"
         traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
 
+
 def output_traj_plot(
     ax,
     name: str,
     output_subdir: str,
     legend_offset: Tuple[float, float] = None,
     legend_loc: str = None,
+    override_legend: bool = False,
 ):
     # Set axis to equal size
     set_aspect_equal(ax)
 
     # Set background colors
     ax.set_facecolor("white")
-    ax.legend(facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset)
+
+    # Combining trajectory plots also combines legends; override to use custom legend
+    if override_legend:
+        cora_line = Line2D([0], [0], color="red", linestyle="-", label="CORA")
+        dcora_line = Line2D([0], [0], color="blue", linestyle="-", label="DCORA")
+        gt_line = Line2D([0], [0], color="black", linestyle="--", label="Ground Truth")
+        ax.legend(handles=[cora_line, dcora_line, gt_line], facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset, ncol=3)
+    else:
+        ax.legend(facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset)
 
     # Set edge colors
     ax.spines["top"].set_color("black")
@@ -181,6 +170,7 @@ def output_traj_plot(
     ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
 
     # save figure
+    plt.tight_layout() # Ensure legend is not cut off if offset is used
     plt.savefig(os.path.join(output_subdir, f"{name}.png"), dpi=DPI)
     plt.close()
 
@@ -312,15 +302,15 @@ class EvaluationPipeline:
             dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
 
             # plot trajectories
-            # TODO(JV): Create combined plots of all agent trajectories
             plot_trajectories(
                 cora_traj_aligned, dcora_traj_aligned, gt_traj, agent_subdir
             )
+
+            # Add trajectories to combined plot
             plot_mode = get_plot_mode_by_traj(cora_traj_aligned, dcora_traj_aligned, gt_traj)
             add_traj_to_plot(
                 ax_combined_traj,
                 plot_mode,
-                agent_id,
                 cora_traj_aligned,
                 dcora_traj_aligned,
                 gt_traj,
@@ -338,9 +328,10 @@ class EvaluationPipeline:
         output_traj_plot(
             ax_combined_traj, 
             "traj_combined", 
-            evo_subdir, 
-            legend_loc=COMBINED_TRAJ_LEGEND_LOC, 
-            legend_offset=COMBINED_TRAJ_LEGEND_OFFSET
+            evo_subdir,
+            override_legend=True,
+            # legend_loc=COMBINED_TRAJ_LEGEND_LOC, 
+            legend_offset=COMBINED_TRAJ_LEGEND_OFFSET,
         )
 
     def evaluate(self) -> None:
