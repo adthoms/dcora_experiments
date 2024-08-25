@@ -19,6 +19,9 @@ from py_factor_graph.utils.logging_utils import logger
 FONT_SIZE = 10
 DPI = 1200
 
+COMBINED_TRAJ_LEGEND_OFFSET = (1.5, 1.0)
+COMBINED_TRAJ_LEGEND_LOC = "upper right"
+
 
 def create_subdir(dir: str, subdir_name: str) -> str:
     subdir_path = os.path.join(dir, subdir_name)
@@ -82,6 +85,12 @@ def align_trajectories(
     )
     return evo_traj_est_aligned
 
+def get_plot_mode_by_traj(cora_traj: PoseTrajectory3D, dcora_traj: PoseTrajectory3D, gt_traj: PoseTrajectory3D) -> PlotMode:
+    isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
+    if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
+        return PlotMode.xy
+    else:
+        return PlotMode.xyz
 
 def plot_trajectories(
     cora_traj: PoseTrajectory3D,
@@ -94,10 +103,7 @@ def plot_trajectories(
     traj_colors = ["red", "blue", "black"]
 
     # check for 2D or 3D plot
-    plot_mode = PlotMode.xyz
-    isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
-    if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
-        plot_mode = PlotMode.xy
+    plot_mode = get_plot_mode_by_traj(cora_traj, dcora_traj, gt_traj)
 
     # plot trajectories on aingle axis
     ax = prepare_axis(fig, plot_mode)
@@ -105,7 +111,7 @@ def plot_trajectories(
         line_style = "--" if name == "Ground Truth" else "-"
         traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
 
-    # Set axis to equal size
+    """# Set axis to equal size
     set_aspect_equal(ax)
 
     # Set background colors
@@ -127,6 +133,55 @@ def plot_trajectories(
 
     # save figure
     plt.savefig(os.path.join(agent_subdir, "traj.png"), dpi=DPI)
+    plt.close()"""
+
+    output_traj_plot(ax, "traj", agent_subdir)
+
+def add_traj_to_plot(
+    ax,
+    plot_mode: PlotMode,
+    agent_name: str,
+    cora_traj: PoseTrajectory3D,
+    dcora_traj: PoseTrajectory3D,
+    gt_traj: PoseTrajectory3D,
+):
+    trajectories = {f"CORA_robot_{agent_name}": cora_traj, f"DCORA_robot_{agent_name}": dcora_traj, f"GT_robot_{agent_name}": gt_traj}
+    traj_colors = ["red", "blue", "black"]
+
+    # plot trajectories
+    for idx, (name, traj_path) in enumerate(trajectories.items()):
+        line_style = "--" if name == "Ground Truth" else "-"
+        traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
+
+def output_traj_plot(
+    ax,
+    name: str,
+    output_subdir: str,
+    legend_offset: Tuple[float, float] = None,
+    legend_loc: str = None,
+):
+    # Set axis to equal size
+    set_aspect_equal(ax)
+
+    # Set background colors
+    ax.set_facecolor("white")
+    ax.legend(facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset)
+
+    # Set edge colors
+    ax.spines["top"].set_color("black")
+    ax.spines["right"].set_color("black")
+    ax.spines["left"].set_color("black")
+    ax.spines["bottom"].set_color("black")
+
+    # Set grid colors
+    ax.grid(color="gray")
+
+    # Set labels
+    ax.set_xlabel("x (m)", fontsize=FONT_SIZE)
+    ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
+
+    # save figure
+    plt.savefig(os.path.join(output_subdir, f"{name}.png"), dpi=DPI)
     plt.close()
 
 
@@ -229,6 +284,9 @@ class EvaluationPipeline:
             "Number of DCORA TUM files must match number of ground truth TUM files!"
         )
 
+        # plot of combined trajectories
+        ax_combined_traj = plt.figure().add_subplot(111)
+
         # apply filter to each agent
         for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
             cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
@@ -254,17 +312,36 @@ class EvaluationPipeline:
             dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
 
             # plot trajectories
+            # TODO(JV): Create combined plots of all agent trajectories
             plot_trajectories(
                 cora_traj_aligned, dcora_traj_aligned, gt_traj, agent_subdir
             )
+            plot_mode = get_plot_mode_by_traj(cora_traj_aligned, dcora_traj_aligned, gt_traj)
+            add_traj_to_plot(
+                ax_combined_traj,
+                plot_mode,
+                agent_id,
+                cora_traj_aligned,
+                dcora_traj_aligned,
+                gt_traj,
+            )
 
             # calculate stats
+            # TODO(JV): Create combined statistics aggregated for the whole dataset
             traj_pair_list = [
                 (gt_traj, cora_traj_aligned),
                 (gt_traj, dcora_traj_aligned),
             ]
             algorithm_name_list = ["cora", "dcora"]
             calculate_stats(traj_pair_list, algorithm_name_list, agent_subdir)
+
+        output_traj_plot(
+            ax_combined_traj, 
+            "traj_combined", 
+            evo_subdir, 
+            legend_loc=COMBINED_TRAJ_LEGEND_LOC, 
+            legend_offset=COMBINED_TRAJ_LEGEND_OFFSET
+        )
 
     def evaluate(self) -> None:
         logger.info("Starting evaluation pipeline...")
