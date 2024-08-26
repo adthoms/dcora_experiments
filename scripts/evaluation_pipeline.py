@@ -20,7 +20,7 @@ from py_factor_graph.utils.logging_utils import logger
 FONT_SIZE = 10
 DPI = 1200
 
-COMBINED_TRAJ_LEGEND_OFFSET = (1.15, -0.15)
+COMBINED_TRAJ_LEGEND_OFFSET = (1.125, -0.15)
 COMBINED_TRAJ_LEGEND_LOC = "lower center"
 
 
@@ -87,7 +87,9 @@ def align_trajectories(
     return evo_traj_est_aligned
 
 
-def get_plot_mode_by_traj(cora_traj: PoseTrajectory3D, dcora_traj: PoseTrajectory3D, gt_traj: PoseTrajectory3D) -> PlotMode:
+def get_plot_mode_by_traj(
+    cora_traj: PoseTrajectory3D, dcora_traj: PoseTrajectory3D, gt_traj: PoseTrajectory3D
+) -> PlotMode:
     isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
     if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
         return PlotMode.xy
@@ -114,7 +116,7 @@ def plot_trajectories(
         line_style = "--" if name == "Ground Truth" else "-"
         traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
 
-    output_traj_plot(ax, "traj", agent_subdir)
+    output_traj_plot(ax, plot_mode, "traj", agent_subdir)
 
 
 def add_traj_to_plot(
@@ -135,6 +137,7 @@ def add_traj_to_plot(
 
 def output_traj_plot(
     ax,
+    plot_mode: PlotMode,
     name: str,
     output_subdir: str,
     legend_offset: Tuple[float, float] = None,
@@ -152,7 +155,13 @@ def output_traj_plot(
         cora_line = Line2D([0], [0], color="red", linestyle="-", label="CORA")
         dcora_line = Line2D([0], [0], color="blue", linestyle="-", label="DCORA")
         gt_line = Line2D([0], [0], color="black", linestyle="--", label="Ground Truth")
-        ax.legend(handles=[cora_line, dcora_line, gt_line], facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset, ncol=3)
+        ax.legend(
+            handles=[cora_line, dcora_line, gt_line],
+            facecolor="white",
+            loc=legend_loc,
+            bbox_to_anchor=legend_offset,
+            ncol=3,
+        )
     else:
         ax.legend(facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset)
 
@@ -168,9 +177,11 @@ def output_traj_plot(
     # Set labels
     ax.set_xlabel("x (m)", fontsize=FONT_SIZE)
     ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
+    if plot_mode == PlotMode.xyz:
+        ax.set_zlabel("z (m)", fontsize=FONT_SIZE)
 
     # save figure
-    plt.tight_layout() # Ensure legend is not cut off if offset is used
+    plt.tight_layout()  # Ensure legend is not cut off if offset is used
     plt.savefig(os.path.join(output_subdir, f"{name}.png"), dpi=DPI)
     plt.close()
 
@@ -229,19 +240,21 @@ def calculate_stats(
         append_stats_to_csv(rpe_trans_stats_dict, rpe_trans_stats_csv_file)
         append_stats_to_csv(rpe_rot_stats_dict, rpe_rot_stats_csv_file)
 
+
 def calculate_combined_stats(
-        cora_tum_file_list: List[str],
-        dcora_tum_file_list: List[str],
-        gt_tum_file_list: List[str],
-        output_subdir: str,
+    cora_tum_file_list: List[str],
+    dcora_tum_file_list: List[str],
+    gt_tum_file_list: List[str],
+    output_subdir: str,
 ) -> None:
-    """Calculate weighted average of all agents' statistics; weight corresponds to the number of poses each agent has.
+    """
+    Calculate weighted average of all agents' statistics; weight corresponds to the number of poses each agent has.
 
     Args:
         cora_tum_file_list (List[str]): List of CORA TUM files
         dcora_tum_file_list (List[str]): List of DCORA TUM files
         gt_tum_file_list (List[str]): List of Ground Truth TUM files
-    
+
     Returns:
         None
     """
@@ -301,10 +314,8 @@ def calculate_combined_stats(
             # calculate APE (trans, rot)
             ape_trans_metric = metrics.APE(metrics.PoseRelation.translation_part)
             ape_trans_metric.process_data(traj_pair)
-            # ape_trans_stats_dict.update(ape_trans_metric.get_all_statistics())
             ape_rot_metric = metrics.APE(metrics.PoseRelation.rotation_part)
             ape_rot_metric.process_data(traj_pair)
-            # ape_rot_stats_dict.update(ape_rot_metric.get_all_statistics())
 
             # calculate RPE (trans, rot)
             rpe_trans_metric = metrics.RPE(
@@ -312,28 +323,23 @@ def calculate_combined_stats(
                 all_pairs=True,  # use all pose pairs
             )
             rpe_trans_metric.process_data(traj_pair)
-            # rpe_trans_stats_dict.update(rpe_trans_metric.get_all_statistics())
             rpe_rot_metric = metrics.RPE(
                 pose_relation=metrics.PoseRelation.rotation_part,
                 all_pairs=True,  # use all pose pairs
             )
             rpe_rot_metric.process_data(traj_pair)
-            # rpe_rot_stats_dict.update(rpe_rot_metric.get_all_statistics())
 
             for stat, value in ape_trans_metric.get_all_statistics().items():
-                ape_trans_metric_dict.setdefault(stat, 0)
+                ape_trans_metric_dict.setdefault(stat, 0)  # type: ignore
                 ape_trans_metric_dict[stat] += value * agent_weight
-            
             for stat, value in ape_rot_metric.get_all_statistics().items():
-                ape_rot_metric_dict.setdefault(stat, 0)
+                ape_rot_metric_dict.setdefault(stat, 0)  # type: ignore
                 ape_rot_metric_dict[stat] += value * agent_weight
-            
             for stat, value in rpe_trans_metric.get_all_statistics().items():
-                rpe_trans_metric_dict.setdefault(stat, 0)
+                rpe_trans_metric_dict.setdefault(stat, 0)  # type: ignore
                 rpe_trans_metric_dict[stat] += value * agent_weight
-            
             for stat, value in rpe_rot_metric.get_all_statistics().items():
-                rpe_rot_metric_dict.setdefault(stat, 0)
+                rpe_rot_metric_dict.setdefault(stat, 0)  # type: ignore
                 rpe_rot_metric_dict[stat] += value * agent_weight
         append_stats_to_csv(ape_trans_metric_dict, ape_trans_stats_csv_file)
         append_stats_to_csv(ape_rot_metric_dict, ape_rot_stats_csv_file)
@@ -424,7 +430,9 @@ class EvaluationPipeline:
             )
 
             # Add trajectories to combined plot
-            plot_mode = get_plot_mode_by_traj(cora_traj_aligned, dcora_traj_aligned, gt_traj)
+            plot_mode = get_plot_mode_by_traj(
+                cora_traj_aligned, dcora_traj_aligned, gt_traj
+            )
             add_traj_to_plot(
                 ax_combined_traj,
                 plot_mode,
@@ -434,7 +442,6 @@ class EvaluationPipeline:
             )
 
             # calculate stats
-            # TODO(JV): Create combined statistics aggregated for the whole dataset
             traj_pair_list = [
                 (gt_traj, cora_traj_aligned),
                 (gt_traj, dcora_traj_aligned),
@@ -443,13 +450,15 @@ class EvaluationPipeline:
             calculate_stats(traj_pair_list, algorithm_name_list, agent_subdir)
 
         combined_subdir = create_subdir(evo_subdir, "combined")
-        logger.info(f"Saving combined trajectory output and weighted average statistics to {combined_subdir} ...")
+        logger.info(
+            f"Saving combined trajectory output and weighted average statistics to {combined_subdir} ..."
+        )
         output_traj_plot(
-            ax_combined_traj, 
-            "traj_combined", 
+            ax_combined_traj,
+            plot_mode,
+            "traj_combined",
             combined_subdir,
             override_legend=True,
-            # legend_loc=COMBINED_TRAJ_LEGEND_LOC, 
             legend_offset=COMBINED_TRAJ_LEGEND_OFFSET,
         )
 
