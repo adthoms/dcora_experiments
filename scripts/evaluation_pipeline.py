@@ -7,6 +7,7 @@ import sys
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 from evo.core import metrics
 from evo.core.trajectory import PoseTrajectory3D
@@ -18,6 +19,9 @@ from py_factor_graph.utils.logging_utils import logger
 
 FONT_SIZE = 10
 DPI = 1200
+
+COMBINED_TRAJ_LEGEND_OFFSET = (1.125, -0.15)
+COMBINED_TRAJ_LEGEND_LOC = "lower center"
 
 
 def create_subdir(dir: str, subdir_name: str) -> str:
@@ -83,6 +87,16 @@ def align_trajectories(
     return evo_traj_est_aligned
 
 
+def get_plot_mode_by_traj(
+    cora_traj: PoseTrajectory3D, dcora_traj: PoseTrajectory3D, gt_traj: PoseTrajectory3D
+) -> PlotMode:
+    isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
+    if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
+        return PlotMode.xy
+    else:
+        return PlotMode.xyz
+
+
 def plot_trajectories(
     cora_traj: PoseTrajectory3D,
     dcora_traj: PoseTrajectory3D,
@@ -94,10 +108,7 @@ def plot_trajectories(
     traj_colors = ["red", "blue", "black"]
 
     # check for 2D or 3D plot
-    plot_mode = PlotMode.xyz
-    isTraj2D = lambda traj: np.all(traj.positions_xyz[:, -1] == 0)
-    if isTraj2D(cora_traj) and isTraj2D(dcora_traj) and isTraj2D(gt_traj):
-        plot_mode = PlotMode.xy
+    plot_mode = get_plot_mode_by_traj(cora_traj, dcora_traj, gt_traj)
 
     # plot trajectories on aingle axis
     ax = prepare_axis(fig, plot_mode)
@@ -105,12 +116,54 @@ def plot_trajectories(
         line_style = "--" if name == "Ground Truth" else "-"
         traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
 
+    output_traj_plot(ax, plot_mode, "traj", agent_subdir)
+
+
+def add_traj_to_plot(
+    ax,
+    plot_mode: PlotMode,
+    cora_traj: PoseTrajectory3D,
+    dcora_traj: PoseTrajectory3D,
+    gt_traj: PoseTrajectory3D,
+):
+    trajectories = {f"CORA": cora_traj, f"DCORA": dcora_traj, f"Ground Truth": gt_traj}
+    traj_colors = ["red", "blue", "black"]
+
+    # plot trajectories
+    for idx, (name, traj_path) in enumerate(trajectories.items()):
+        line_style = "--" if name == "Ground Truth" else "-"
+        traj(ax, plot_mode, traj_path, line_style, traj_colors[idx], name)
+
+
+def output_traj_plot(
+    ax,
+    plot_mode: PlotMode,
+    name: str,
+    output_subdir: str,
+    legend_offset: Tuple[float, float] = None,
+    legend_loc: str = None,
+    override_legend: bool = False,
+):
     # Set axis to equal size
     set_aspect_equal(ax)
 
     # Set background colors
     ax.set_facecolor("white")
-    ax.legend(facecolor="white")
+
+    # Combining trajectory plots also combines legends; override to use custom legend
+    if override_legend:
+        cora_line = Line2D([0], [0], color="red", linestyle="-", label="CORA")
+        dcora_line = Line2D([0], [0], color="blue", linestyle="-", label="DCORA")
+        gt_line = Line2D([0], [0], color="black", linestyle="--", label="Ground Truth")
+        ax.legend(
+            handles=[cora_line, dcora_line, gt_line],
+            facecolor="white",
+            loc=legend_loc,
+            bbox_to_anchor=legend_offset,
+            ncol=3,
+        )
+    else:
+        ax.legend(facecolor="white", loc=legend_loc, bbox_to_anchor=legend_offset)
 
     # Set edge colors
     ax.spines["top"].set_color("black")
@@ -124,9 +177,12 @@ def plot_trajectories(
     # Set labels
     ax.set_xlabel("x (m)", fontsize=FONT_SIZE)
     ax.set_ylabel("y (m)", fontsize=FONT_SIZE)
+    if plot_mode == PlotMode.xyz:
+        ax.set_zlabel("z (m)", fontsize=FONT_SIZE)
 
     # save figure
-    plt.savefig(os.path.join(agent_subdir, "traj.png"), dpi=DPI)
+    plt.tight_layout()  # Ensure legend is not cut off if offset is used
+    plt.savefig(os.path.join(output_subdir, f"{name}.png"), dpi=DPI)
     plt.close()
 
 
@@ -185,6 +241,118 @@ def calculate_stats(
         append_stats_to_csv(rpe_rot_stats_dict, rpe_rot_stats_csv_file)
 
 
+def calculate_combined_stats(
+    cora_tum_file_list: List[str],
+    dcora_tum_file_list: List[str],
+    gt_tum_file_list: List[str],
+    output_subdir: str,
+) -> None:
+    """
+    Calculate weighted average of all agents' statistics; weight corresponds to the number of poses each agent has.
+
+    Args:
+        cora_tum_file_list (List[str]): List of CORA TUM files
+        dcora_tum_file_list (List[str]): List of DCORA TUM files
+        gt_tum_file_list (List[str]): List of Ground Truth TUM files
+
+    Returns:
+        None
+    """
+
+    num_cora_trajectories = 0
+    num_dcora_trajectories = 0
+    # get total number of CORA/DCORA poses
+    for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
+        cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
+    ):
+        # align trajectories
+        gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
+        cora_traj_aligned = align_trajectories(cora_tum_file, gt_traj)
+        dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
+
+        num_cora_trajectories += cora_traj_aligned.num_poses
+        num_dcora_trajectories += dcora_traj_aligned.num_poses
+
+    # calculate weighted average of statistics
+    algorithm_name_list = ["cora", "dcora"]
+
+    ape_trans_stats_csv_file = os.path.join(output_subdir, f"ape_trans_stats.csv")
+    ape_rot_stats_csv_file = os.path.join(output_subdir, f"ape_rot_stats.csv")
+    rpe_trans_stats_csv_file = os.path.join(output_subdir, f"rpe_trans_stats.csv")
+    rpe_rot_stats_csv_file = os.path.join(output_subdir, f"rpe_rot_stats.csv")
+
+    ape_trans_metric_dict = dict()
+    ape_rot_metric_dict = dict()
+    rpe_trans_metric_dict = dict()
+    rpe_rot_metric_dict = dict()
+
+    for algorithm_name in algorithm_name_list:
+        ape_trans_metric_dict["alg"] = f"{algorithm_name}"
+        ape_rot_metric_dict["alg"] = f"{algorithm_name}"
+        rpe_trans_metric_dict["alg"] = f"{algorithm_name}"
+        rpe_rot_metric_dict["alg"] = f"{algorithm_name}"
+
+        for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
+            cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
+        ):
+            # align trajectories
+            gt_traj = file_interface.read_tum_trajectory_file(gt_tum_file)
+            cora_traj_aligned = align_trajectories(cora_tum_file, gt_traj)
+            dcora_traj_aligned = align_trajectories(dcora_tum_file, gt_traj)
+
+            # calculate stats
+            traj_pair = None
+            agent_weight = 0.0
+
+            if algorithm_name == "cora":
+                traj_pair = (gt_traj, cora_traj_aligned)
+                agent_weight = cora_traj_aligned.num_poses / num_cora_trajectories
+            else:
+                traj_pair = (gt_traj, dcora_traj_aligned)
+                agent_weight = dcora_traj_aligned.num_poses / num_dcora_trajectories
+
+            # calculate APE (trans, rot)
+            ape_trans_metric = metrics.APE(metrics.PoseRelation.translation_part)
+            ape_trans_metric.process_data(traj_pair)
+            ape_rot_metric = metrics.APE(metrics.PoseRelation.rotation_part)
+            ape_rot_metric.process_data(traj_pair)
+
+            # calculate RPE (trans, rot)
+            rpe_trans_metric = metrics.RPE(
+                pose_relation=metrics.PoseRelation.translation_part,
+                all_pairs=True,  # use all pose pairs
+            )
+            rpe_trans_metric.process_data(traj_pair)
+            rpe_rot_metric = metrics.RPE(
+                pose_relation=metrics.PoseRelation.rotation_part,
+                all_pairs=True,  # use all pose pairs
+            )
+            rpe_rot_metric.process_data(traj_pair)
+
+            for stat, value in ape_trans_metric.get_all_statistics().items():
+                ape_trans_metric_dict.setdefault(stat, 0)  # type: ignore
+                ape_trans_metric_dict[stat] += value * agent_weight
+            for stat, value in ape_rot_metric.get_all_statistics().items():
+                ape_rot_metric_dict.setdefault(stat, 0)  # type: ignore
+                ape_rot_metric_dict[stat] += value * agent_weight
+            for stat, value in rpe_trans_metric.get_all_statistics().items():
+                rpe_trans_metric_dict.setdefault(stat, 0)  # type: ignore
+                rpe_trans_metric_dict[stat] += value * agent_weight
+            for stat, value in rpe_rot_metric.get_all_statistics().items():
+                rpe_rot_metric_dict.setdefault(stat, 0)  # type: ignore
+                rpe_rot_metric_dict[stat] += value * agent_weight
+        append_stats_to_csv(ape_trans_metric_dict, ape_trans_stats_csv_file)
+        append_stats_to_csv(ape_rot_metric_dict, ape_rot_stats_csv_file)
+        append_stats_to_csv(rpe_trans_metric_dict, rpe_trans_stats_csv_file)
+        append_stats_to_csv(rpe_rot_metric_dict, rpe_rot_stats_csv_file)
+
+        # Clear dictionaries for next algorithm
+        ape_trans_metric_dict = dict()
+        ape_rot_metric_dict = dict()
+        rpe_trans_metric_dict = dict()
+        rpe_rot_metric_dict = dict()
+
+
 class EvaluationPipeline:
     def __init__(self, args):
         self.data_dir = args.data_dir
@@ -229,6 +397,9 @@ class EvaluationPipeline:
             "Number of DCORA TUM files must match number of ground truth TUM files!"
         )
 
+        # plot of combined trajectories
+        ax_combined_traj = plt.figure().add_subplot(111)
+
         # apply filter to each agent
         for cora_tum_file, dcora_tum_file, gt_tum_file in zip(
             cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list
@@ -258,6 +429,18 @@ class EvaluationPipeline:
                 cora_traj_aligned, dcora_traj_aligned, gt_traj, agent_subdir
             )
 
+            # Add trajectories to combined plot
+            plot_mode = get_plot_mode_by_traj(
+                cora_traj_aligned, dcora_traj_aligned, gt_traj
+            )
+            add_traj_to_plot(
+                ax_combined_traj,
+                plot_mode,
+                cora_traj_aligned,
+                dcora_traj_aligned,
+                gt_traj,
+            )
+
             # calculate stats
             traj_pair_list = [
                 (gt_traj, cora_traj_aligned),
@@ -265,6 +448,23 @@ class EvaluationPipeline:
             ]
             algorithm_name_list = ["cora", "dcora"]
             calculate_stats(traj_pair_list, algorithm_name_list, agent_subdir)
+
+        combined_subdir = create_subdir(evo_subdir, "combined")
+        logger.info(
+            f"Saving combined trajectory output and weighted average statistics to {combined_subdir} ..."
+        )
+        output_traj_plot(
+            ax_combined_traj,
+            plot_mode,
+            "traj_combined",
+            combined_subdir,
+            override_legend=True,
+            legend_offset=COMBINED_TRAJ_LEGEND_OFFSET,
+        )
+
+        calculate_combined_stats(
+            cora_tum_file_list, dcora_tum_file_list, gt_tum_file_list, combined_subdir
+        )
 
     def evaluate(self) -> None:
         logger.info("Starting evaluation pipeline...")
