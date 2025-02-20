@@ -20,7 +20,7 @@ from py_factor_graph.utils.logging_utils import logger
 FONT_SIZE = 10
 DPI = 1200
 
-COMBINED_TRAJ_LEGEND_OFFSET = (1.125, -0.15)
+COMBINED_TRAJ_LEGEND_OFFSET = (1.12, -0.15)
 COMBINED_TRAJ_LEGEND_LOC = "lower center"
 
 
@@ -103,7 +103,7 @@ def plot_trajectories(
     gt_traj: PoseTrajectory3D,
     agent_subdir: str,
 ):
-    fig = plt.figure()
+    fig = plt.figure(figsize=(3.5, 4))
     trajectories = {"CORA": cora_traj, "DCORA": dcora_traj, "Ground Truth": gt_traj}
     traj_colors = ["red", "blue", "black"]
 
@@ -182,7 +182,7 @@ def output_traj_plot(
 
     # save figure
     plt.tight_layout()  # Ensure legend is not cut off if offset is used
-    plt.savefig(os.path.join(output_subdir, f"{name}.png"), dpi=DPI)
+    plt.savefig(os.path.join(output_subdir, f"{name}.pdf"), dpi=DPI)
     plt.close()
 
 
